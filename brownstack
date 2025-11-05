@@ -1,0 +1,132 @@
+import SwiftUI
+import UIKit
+
+struct AppWheelView: View {
+
+    // MARK: - Config
+    private struct Config {
+        static let cardWidthMultiplier: CGFloat = 0.6
+        static let cardHeightMultiplier: CGFloat = 0.15
+        static let perspective: CGFloat = 0.7
+        static let rotationAngle: Double = 60.0
+        static let cardTiltAngle: Double = 30.0
+        static let frontThreshold: Double = 0.3
+        static let frontScale: CGFloat = 1.15
+        static let frontYOffset: CGFloat = -0.02
+        static let backScaleMultiplier: Double = 0.2
+        static let backOpacityMultiplier: Double = 0.3
+        static let dragSensitivity: Double = 100.0
+        static let velocityMultiplier: Double = 200.0
+        static let friction: Double = 0.92
+        static let stopThreshold: Double = 0.01
+        static let timerInterval: TimeInterval = 0.02
+        static let snapSpringResponse: Double = 0.4
+        static let snapSpringDamping: Double = 0.8
+    }
+
+    // MARK: - State
+    @State private var allApps: [AppItem] = [
+        AppItem(name: "Mail", scheme: "mailto:", color: .blue, iconName: "envelope"),
+        AppItem(name: "Maps", scheme: "maps://", color: .green, iconName: "map"),
+        AppItem(name: "Music", scheme: "music://", color: .orange, iconName: "music.note"),
+        AppItem(name: "Notes", scheme: "mobilenotes://", color: .purple, iconName: "note.text"),
+        AppItem(name: "Photos", scheme: "photos-redirect://", color: .pink, iconName: "photo"),
+        AppItem(name: "Calendar", scheme: "calshow://", color: .red, iconName: "calendar"),
+        AppItem(name: "Settings", scheme: "App-prefs:", color: .gray, iconName: "gear")
+    ]
+    
+    @State private var apps: [AppItem] = []
+    @State private var rotation = 0.0
+    @GestureState private var dragOffset: CGFloat = 0
+    @State private var velocity: Double = 0
+    @State private var momentumTimer: Timer?
+    @State private var lastSnapIndex: Int? = nil
+    private let haptic = UIImpactFeedbackGenerator(style: .light)
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                ForEach(apps.indices, id: \.self) { i in
+                    let offset = Double(i) - wrappedRotation(rotation, count: apps.count)
+                    let isFront = abs(offset) < Config.frontThreshold
+
+                    AppCard(app: apps[i], isFront: isFront, dragOffset: dragOffset)
+                        .frame(width: geo.size.width * Config.cardWidthMultiplier,
+                               height: geo.size.height * Config.cardHeightMultiplier)
+                        .scaleEffect(isFront ? Config.frontScale : (1 - abs(offset) * Config.backScaleMultiplier))
+                        .opacity(1 - abs(offset) * Config.backOpacityMultiplier)
+                        .rotation3DEffect(.degrees(offset * Config.rotationAngle),
+                                          axis: (x: 1, y: 0, z: 0),
+                                          perspective: Config.perspective)
+                        .zIndex(isFront ? 100 : (Double(apps.count) - abs(offset)))
+                        .offset(y: isFront ? geo.size.height * Config.frontYOffset : 0)
+                        .onTapGesture {
+                            openApp(apps[i].scheme)
+                        }
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .gesture(
+                DragGesture()
+                    .updating($dragOffset) { value, state, _ in
+                        state = value.translation.height
+                        haptic.prepare()
+                    }
+                    .onChanged { value in
+                        momentumTimer?.invalidate()
+                        rotation -= Double(value.translation.height / Config.dragSensitivity)
+                    }
+                    .onEnded { value in
+                        let swipeVelocity = value.predictedEndTranslation.height - value.translation.height
+                        velocity = -Double(swipeVelocity / Config.velocityMultiplier)
+                        decayMomentumAndSnap()
+                    }
+            )
+            .onAppear {
+                apps = allApps.filter { app in
+                    if let url = URL(string: app.scheme) {
+                        return UIApplication.shared.canOpenURL(url)
+                    }
+                    return false
+                }
+            }
+        }
+    }
+
+    // MARK: - Physics
+    private func decayMomentumAndSnap() {
+        momentumTimer?.invalidate()
+        momentumTimer = Timer.scheduledTimer(withTimeInterval: Config.timerInterval, repeats: true) { timer in
+            velocity *= Config.friction
+            rotation += velocity
+
+            let snapIndex = Int(round(rotation))
+            if snapIndex != lastSnapIndex {
+                lastSnapIndex = snapIndex
+                haptic.impactOccurred()
+            }
+
+            if abs(velocity) < Config.stopThreshold {
+                timer.invalidate()
+                withAnimation(.spring(response: Config.snapSpringResponse,
+                                      dampingFraction: Config.snapSpringDamping)) {
+                    rotation = round(rotation)
+                }
+                haptic.impactOccurred(intensity: 0.7)
+            }
+        }
+    }
+
+    // MARK: - Helpers
+    private func wrappedRotation(_ value: Double, count: Int) -> Double {
+        let mod = value.truncatingRemainder(dividingBy: Double(count))
+        return mod >= 0 ? mod : mod + Double(count)
+    }
+
+    private func openApp(_ scheme: String) {
+        if let url = URL(string: scheme),
+           UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url)
+        }
+    }
+}
